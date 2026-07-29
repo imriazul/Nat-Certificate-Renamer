@@ -130,7 +130,7 @@ def process_files_pass(pending_dir, success_dir, failed_dir, x, y, w, h, prefix,
                 # 1. Crop
                 cropped_zone = image[y:y+h, x:x+w]
                 
-                # 2. MAGIC ENHANCEMENT: Grayscale, Scale up 2x, and Threshold to pure black/white
+                # 2. MAGIC ENHANCEMENT
                 gray_zone = cv2.cvtColor(cropped_zone, cv2.COLOR_BGR2GRAY)
                 enlarged_zone = cv2.resize(gray_zone, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
                 _, thresh_zone = cv2.threshold(enlarged_zone, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
@@ -144,19 +144,57 @@ def process_files_pass(pending_dir, success_dir, failed_dir, x, y, w, h, prefix,
                 
                 if match:
                     examinee_number = match.group(1)
-                    new_filename = f"{examinee_number}.{ext}"
-                    new_filepath = os.path.join(success_dir, new_filename)
                     
-                    # FIX: Prevent Overwriting if two files get the same name
-                    counter = 1
-                    while os.path.exists(new_filepath):
-                        new_filename = f"{examinee_number}_{counter}.{ext}"
-                        new_filepath = os.path.join(success_dir, new_filename)
-                        counter += 1
+                    # Setup path variables for checking collisions
+                    standard_name = f"{examinee_number}.{ext}"
+                    standard_path = os.path.join(success_dir, standard_name)
                     
-                    shutil.move(filepath, new_filepath)
-                    print(f"✅ Success: {original_clean_name} -> {new_filename}")
-                    success_count += 1
+                    duplicate_base_name = f"Duplicate_{examinee_number}.{ext}"
+                    duplicate_base_path = os.path.join(success_dir, duplicate_base_name)
+
+                    # Check if this number is already taken in the success folder
+                    has_standard_collision = os.path.exists(standard_path)
+                    has_duplicate_collision = os.path.exists(duplicate_base_path)
+                    
+                    if has_standard_collision or has_duplicate_collision:
+                        if attempt < MAX_ATTEMPTS:
+                            # --- RETRY LOGIC (Attempts 1 to 4) ---
+                            if has_standard_collision:
+                                # Yank the existing file back into the failed queue
+                                existing_failed_name = f"Failed_Attempt_{attempt}_Yanked_{examinee_number}.{ext}"
+                                shutil.move(standard_path, os.path.join(failed_dir, existing_failed_name))
+                                success_count -= 1  # Remove from success tally
+                                fail_count += 1     # Add to failed tally
+                                
+                            # Put the current file into the failed queue too
+                            current_failed_name = f"Failed_Attempt_{attempt}_{original_clean_name}"
+                            shutil.move(filepath, os.path.join(failed_dir, current_failed_name))
+                            fail_count += 1
+                            print(f"⚠️ Collision on {examinee_number}! Both sent to Attempt {attempt + 1}.")
+                            
+                        else:
+                            # --- FINAL ATTEMPT LOGIC ---
+                            if has_standard_collision:
+                                # Rename the first file to Duplicate_...
+                                shutil.move(standard_path, duplicate_base_path)
+                                
+                            # Find the next available Duplicate_..._X name for the current file
+                            counter = 1
+                            while True:
+                                dup_name = f"Duplicate_{examinee_number}_{counter}.{ext}"
+                                dup_path = os.path.join(success_dir, dup_name)
+                                if not os.path.exists(dup_path):
+                                    shutil.move(filepath, dup_path)
+                                    break
+                                counter += 1
+                                
+                            print(f"⚠️ Unresolved Duplicate saved as {dup_name}")
+                            success_count += 1
+                    else:
+                        # --- NORMAL SUCCESS ---
+                        shutil.move(filepath, standard_path)
+                        print(f"✅ Success: {original_clean_name} -> {standard_name}")
+                        success_count += 1
                 else:
                     new_failed_name = f"Failed_Attempt_{attempt}_{original_clean_name}"
                     new_failed_path = os.path.join(failed_dir, new_failed_name)
@@ -165,8 +203,6 @@ def process_files_pass(pending_dir, success_dir, failed_dir, x, y, w, h, prefix,
                     print(f"❌ Failed: {original_clean_name} (OCR read: '{clean_text}')")
                     fail_count += 1
             else:
-                # FIX: Catch files that failed to load (unsupported formats/corrupted files) 
-                # instead of leaving them in temp_pending to be deleted!
                 print(f"⚠️ Error: Could not read {original_clean_name}. Moving to failed.")
                 new_failed_name = f"Unreadable_{original_clean_name}"
                 new_failed_path = os.path.join(failed_dir, new_failed_name)
@@ -174,7 +210,6 @@ def process_files_pass(pending_dir, success_dir, failed_dir, x, y, w, h, prefix,
                 fail_count += 1
 
     return success_count, fail_count
-
 def save_output_folder(source_folder, output_folder_name):
     """Moves the final processed files into the chosen output folder."""
     os.makedirs(output_folder_name, exist_ok=True)
